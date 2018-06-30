@@ -39,6 +39,15 @@ const isSliceField = (key, value) =>
 const isGroupField = value =>
   Array.isArray(value) && typeof value[0] === 'object'
 
+// Returns true if the field value appears to be an Embed field, false
+// otherwise.
+const isEmbedField = value =>
+  value !== null &&
+  typeof value === 'object' &&
+  value.hasOwnProperty('type') &&
+  value.hasOwnProperty('thumbnail_url') &&
+  value.type === 'video'
+
 // Normalizes a rich text field by providing HTML and text versions of the
 // value using `prismic-dom` on the `html` and `text` keys, respectively. The
 // raw value is provided on the `raw` key.
@@ -97,6 +106,54 @@ const normalizeImageField = async args => {
     try {
       const fileNode = await createRemoteFileNode({
         url: value.url,
+        store,
+        cache,
+        createNode,
+      })
+
+      if (fileNode) {
+        fileNodeID = fileNode.id
+        await cache.set(mediaDataCacheKey, { fileNodeID })
+      }
+    } catch (error) {
+      console.log(error)
+    }
+  }
+
+  if (fileNodeID) {
+    return {
+      ...value,
+      localFile___NODE: fileNodeID,
+    }
+  }
+
+  return value
+}
+
+// Normalizes an Embed field by downloading the thumbail and creating a
+// File node using `gatsby-source-filesystem`. This allows for
+// `gatsby-transformer-sharp` and `gatsby-image` integration. The linked node
+// data is provided on the `localFile` key.
+// The file is ony created when the embed type has a thumbnail.
+const normalizeEmbedField = async args => {
+  const { value, createNode, store, cache, touchNode } = args
+
+  let fileNodeID
+  const mediaDataCacheKey = `prismic-media-${value.thumbnail_url}`
+  const cacheMediaData = await cache.get(mediaDataCacheKey)
+
+  // If we have cached media data and it wasn't modified, reuse previously
+  // created file node to not try to redownload.
+  if (cacheMediaData) {
+    fileNodeID = cacheMediaData.fileNodeID
+    touchNode(cacheMediaData.fileNodeID)
+  }
+
+  // If we don't have cached data, download the file.
+  if (!fileNodeID) {
+    try {
+      const fileNode = await createRemoteFileNode({
+        url: value.thumbnail_url,
         store,
         cache,
         createNode,
@@ -187,6 +244,8 @@ export const normalizeField = async args => {
     return normalizeLinkField(value, linkResolver, generateNodeId)
 
   if (isImageField(value)) return await normalizeImageField(args)
+
+  if (isEmbedField(value)) return await normalizeEmbedField(args)
 
   if (isSliceField(key, value)) return await normalizeSliceField(args)
 
